@@ -1,0 +1,379 @@
+  // TO DO
+  // 1. Fix accuracy
+  // 2. Do subtraction
+  // 3. Check with different hand orientations
+  // 4. Deal with noise; hovering around threshold
+  //      it should not keep switching between 0 and 1
+
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BNO055.h>
+#include <utility/imumaths.h>
+  
+Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x29);
+Adafruit_BNO055 bno2 = Adafruit_BNO055(56, 0x28);
+
+void setup(void) 
+{
+  
+  Serial.begin(250000);
+  Serial.println("Orientation Sensor Test"); Serial.println("");
+  
+  /* Initialise the sensor */
+//  Adafruit_BNO055::adafruit_bno055_opmode_t mode = Adafruit_BNO055::adafruit_bno055_opmode_t::OPERATION_MODE_IMUPLUS;
+  if(!bno.begin())
+  {
+    /* There was a problem detecting the BNO055 ... check your connections */
+    Serial.print("Ooops, no BNO055 detected ... Check your wiring or I2C ADDR!");
+    while(1);
+  }
+    /* Initialise the sensor */
+  if(!bno2.begin())
+  {
+    /* There was a problem detecting the BNO055 ... check your connections */
+    Serial.print("Ooops, no BNO055 detected ... Check your wiring or I2C ADDR!");
+    while(1);
+  }
+  delay(1000);
+    
+  bno.setExtCrystalUse(true);
+  bno2.setExtCrystalUse(true);
+}
+
+
+/*
+ * newState : adjusts current state based on current and prior Euler readings
+ *    A state is defined to be the number of 180 degree jumps of the current reading
+ *    from the initial condition. The initial state is always 0. 
+ *    For example, 196, 198, 20 would be accompanied by the states 0, 0, and -1 because 20
+ *    is 180 degrees less than 200.
+ *    Likewise, -184, -182, 180, would be accompanied by the states 0, 0, and 2 because 180
+ *    is 360 degrees greater than -180.
+ * 
+ * @currentValue: current Euler value reading for either X, Y, or Z
+ * @previousValue: the previous Euler value reading for that same variable 
+ * @previousState: the state determined in the prior iteration which keeps track of any previous adjustments
+ *    as a result of a call to this function
+ * 
+ * @return: an integer representing by how many multiples of 180 the current Euler value needs to be adjusted
+ */
+int newState(double currentValue, double previousValue, int previousState) {
+  int updatedState = previousState;
+  if(currentValue < previousValue - 120) { //went down at least a little (~180)
+    if(currentValue < previousValue - 270) { //went down a lot (~360)
+      updatedState = previousState - 2;
+    }
+    else {
+      updatedState = previousState - 1;
+    }
+  }
+  else if(currentValue > previousValue + 120) { //went up at least a little (~180)
+    if(currentValue > previousValue + 270) { //went up a lot (~360)
+      updatedState = previousState + 2;
+    }
+    else {
+      updatedState = previousState + 1;
+    }
+  }
+  return updatedState;
+}
+
+/*
+ * makeContinuous : adjusts Euler value based on its current state to avoid big jumps 
+ *    that would be caused by reaching the end of the circle.
+ *    For example, 340, 342, -16 would be adjusted to 340, 342, 344
+ * 
+ * @currentValue: the current reading of the Euler value for either X, Y, or Z
+ * @currentState: the updated state after a call to newState()
+ * 
+ * @return adjusted Euler value for the variable such that it is close to the previous reading
+ * 
+ * Assumptions: the current state must be determined first by applying newState()
+ *    before using this function
+ */
+double makeContinuous(double currentValue, int currentState) {
+  return currentValue - currentState * 180;
+}
+
+
+void rotateCoordinates(double *vector, double *rotation) // rotation angles have to be in radians
+{
+  // vector:
+  // vector[0]: measured rotation around absolute x axis (roll)
+  // vector[1]: measured rotation around absolute y axis (pitch)
+  // vector[2]: measured rotation around absolute z axis (yaw/heading)
+
+  // rotation:
+  // rotation[0]: desired frame rotation around absolute x axis (roll)
+  // rotation[1]: desired frame rotation around absolute y axis (pitch)
+  // rotation[2]: desired frame rotation around absolute z axis (yaw/heading)
+
+  float vectorAux[3] = {vector[0], vector[1], vector[2]};
+
+  // This expression needs to be checked:
+  //    vector[0] = (cos(rotation[2])*cos(rotation[1]) + sin(rotation[2])*sin(rotation[1])*sin(rotation[0]))*vectorAux[0] + (sin(rotation[2])*cos(rotation[1]) - sin(rotation[1])*sin(rotation[0])*cos(rotation[2]))*vectorAux[1] + (-sin(rotation[1])*cos(rotation[0]))*vectorAux[2];
+  //    vector[1] = (-sin(rotation[2])*cos(rotation[0]))*vectorAux[0] + (cos(rotation[2])*cos(rotation[0]))*vectorAux[1] + (-sin(rotation[0]))*vectorAux[2];
+  //    vector[2] = (cos(rotation[2])*sin(rotation[1]) - sin(rotation[2])*cos(rotation[1])*sin(rotation[0]))*vectorAux[0] + (sin(rotation[2])*sin(rotation[1]) + sin(rotation[0])*cos(rotation[2])*cos(rotation[1]))*vectorAux[1] + (cos(rotation[1])*cos(rotation[0])) *vectorAux[2]; 
+
+  // Rotation z, then y, then x: link http://inside.mines.edu/fs_home/gmurray/ArbitraryAxisRotation/
+  // alpha = rotation[0] = roll
+  // beta = rotation[1] = pitch
+  // gamma = rotation[2] = yaw
+
+  // Rotation x, then y, then z: link http://inside.mines.edu/fs_home/gmurray/ArbitraryAxisRotation/
+  // alpha = rotation[0] = roll
+  // beta = rotation[1] = pitch
+  // gamma = rotation[2] = yaw
+  vector[0] = (cos(rotation[1])*cos(rotation[2]))*vectorAux[0] + (cos(rotation[2])*sin(rotation[0])*sin(rotation[1])-cos(rotation[0])*sin(rotation[2]))*vectorAux[1] + (cos(rotation[0])*cos(rotation[2])*sin(rotation[1]) + sin(rotation[0])*sin(rotation[2]))*vectorAux[2];
+  vector[1] = (cos(rotation[1])*sin(rotation[2]))*vectorAux[0] + (cos(rotation[0])*cos(rotation[2])+sin(rotation[0])*sin(rotation[1])*sin(rotation[2]))*vectorAux[1] + (-cos(rotation[2])*sin(rotation[0])+cos(rotation[0])*sin(rotation[1])*sin(rotation[2]))*vectorAux[2];
+  vector[2] = (-sin(rotation[1]))*vectorAux[0] + (cos(rotation[1])*sin(rotation[0]))*vectorAux[1] + (cos(rotation[0])*cos(rotation[1]))*vectorAux[2];
+}
+
+void loop(void)
+{
+  imu::Vector<3> euler = bno.getVector(Adafruit_BNO055::VECTOR_EULER);
+  imu::Vector<3> euler2 = bno2.getVector(Adafruit_BNO055::VECTOR_EULER);
+  
+  //This will contain the state of each variable needed to properly adjust its output
+  int stateXYZ[6] = {0, 0, 0, 0, 0, 0};
+
+  //This will contain X, Y, and Z Euler values for the current iteration without any changes
+  double rawXYZ[6] = {0, 0, 0, 0, 0, 0};
+  
+  //This will contain X, Y, and Z Euler values after adjusting for continuity
+  double contXYZ[6] = {0, 0, 0, 0, 0, 0};
+
+  //This will contain raw X, Y, and Z Euler values of the previous iterations' reading
+  double prevXYZ[6] = {0, 0, 0, 0, 0, 0};
+
+  //This will contain the strings for reading out values
+  String strXYZ[6] = {" X1: ", " Y1: ", " Z1: ", " X2: ", " Y2: ", " Z2: "};
+ 
+  //This will contain the strings for reading out values
+  String strRawXYZ[6] = {"  Raw X1: ", "  Raw Y1: ", "  Raw Z1: ", "  Raw X2: ", "  Raw Y2: ", "  Raw Z2: "};
+  /*
+  double calibY1 = 0;
+  double calibY2 = 0;
+  */
+
+  int counter = 0;
+
+  double rotation[3];
+  double rotationRef[3];
+  double devAngle;
+//  float yUnit[3] = {0, 1, 0};
+  double xUnitRef[3] = {1, 0, 0};
+  double yUnitRef[3] = {0, 1, 0};
+  double zUnitRef[3] = {0, 0, 1};
+  double zUnit[3] = {0, 0, 1};
+  double projXYZ[3] = {0};
+  double encoderAngle = 0;
+  int len;
+
+  while(1) {
+    
+    imu::Vector<3> euler = bno.getVector(Adafruit_BNO055::VECTOR_EULER);
+    imu::Vector<3> euler2 = bno2.getVector(Adafruit_BNO055::VECTOR_EULER);
+
+    counter += 1;
+
+    if(counter == 5) {
+      rotationRef[0] = euler.x()/180.0*PI;
+      rotationRef[1] = euler.y()/180.0*PI;
+      rotationRef[2] = euler.z()/180.0*PI;
+    
+      rotateCoordinates(xUnitRef, rotationRef);
+      rotateCoordinates(yUnitRef, rotationRef);
+      rotateCoordinates(zUnitRef, rotationRef);
+      
+      prevXYZ[0] = euler.x();
+      prevXYZ[1] = euler.y();
+      prevXYZ[2] = euler.z();
+      prevXYZ[3] = euler2.x();
+      prevXYZ[4] = euler2.y();
+      prevXYZ[5] = euler2.z();
+    }
+    
+    if(counter > 5) { // Ignore first several preliminary readings of 0
+      
+      rotation[0] = euler.x()/180.0*PI;
+      rotation[1] = euler.y()/180.0*PI;
+      rotation[2] = euler.z()/180.0*PI;
+      zUnit[0] = 0;
+      zUnit[1] = 0;
+      zUnit[2] = 1;
+      rotateCoordinates(zUnit, rotation);
+  
+      projXYZ[0] = xUnitRef[0]*zUnit[0] + xUnitRef[1]*zUnit[1] + xUnitRef[2]*zUnit[2];
+      projXYZ[1] = yUnitRef[0]*zUnit[0] + yUnitRef[1]*zUnit[1] + yUnitRef[2]*zUnit[2];
+      projXYZ[2] = zUnitRef[0]*zUnit[0] + zUnitRef[1]*zUnit[1] + zUnitRef[2]*zUnit[2];
+  
+  //    atan2(projXYZ[0], projXYZ[2]);
+        
+
+      rawXYZ[0] = euler.x();
+      rawXYZ[1] = euler.y();
+      rawXYZ[2] = euler.z();
+      rawXYZ[3] = euler2.x();
+      rawXYZ[4] = euler2.y();
+      rawXYZ[5] = euler2.z();
+      
+      for (int i = 0; i < 3; i++) {
+        stateXYZ[i] = newState(rawXYZ[i], prevXYZ[i], stateXYZ[i]);
+        prevXYZ[i] = rawXYZ[i];
+        contXYZ[i] = makeContinuous(rawXYZ[i], stateXYZ[i]);
+        
+        //Serial.print(strRawXYZ[i]);
+        //Serial.print(rawXYZ[i]);
+        Serial.print(strXYZ[i]);
+        Serial.print(contXYZ[i]);
+        Serial.print(" (");
+        Serial.print(stateXYZ[i]);
+        Serial.print(") ");
+        
+      }
+      Serial.print(" Proj: ");
+      Serial.print(" XRef: ");
+      Serial.print(projXYZ[0], 3);
+      Serial.print(" YRef: ");
+      Serial.print(projXYZ[1], 3);
+      Serial.print(" ZRef: ");
+      Serial.println(projXYZ[2], 3);
+    }
+    
+    delay(200);
+  }
+}
+      
+      
+
+ 
+    
+
+    
+     
+
+    /*
+    if(euler.y() - calibY1 - euler2.y() + calibY2 < -6 || euler.y() - calibY1 - euler2.y() + calibY2 > 6) {
+      Serial.print("  1");
+    }
+    else {
+      Serial.print("  0");
+    }
+      
+    Serial.print("    Y1: ");
+    Serial.print(euler.y() - calibY1);
+  
+    Serial.print("    Y2: ");
+    Serial.print(euler2.y() - calibY2);
+    
+    Serial.print("    Y1-Y2: ");
+    Serial.print(euler.y() - calibY1 - euler2.y() + calibY2);
+
+    Serial.print("   counter: ");
+    Serial.println(counter);
+    
+    if (euler.y() == previousY1 && euler2.y() == previousY2) {
+      counter += 1;
+      if(counter == 10) {
+        calibY1 = euler.y();
+        calibY2 = euler2.y();
+        Serial.println("Calibrated");
+        counter = 0;
+      }
+    } 
+    else {
+      counter = 0;
+    }
+    
+    previousY1 = euler.y();
+    previousY2 = euler2.y();
+    */
+
+  /*
+  else {
+    if(euler.z() > 80 && euler.z() < 110 && (euler.y() < -3.5 || euler.y() > 3.5)) {
+      Serial.print("  1?");
+    }
+    else {
+      Serial.print("  0");
+    }
+  }
+  */
+  
+
+  /* CALIBRATION DISPLAY
+  
+  uint8_t system, gyro, accel, mag, system2, gyro2, accel2, mag2;
+  system = gyro = accel = mag = system2 = gyro2 = accel2 = mag2 = 0;
+  bno.getCalibration(&system, &gyro, &accel, &mag);
+  bno2.getCalibration(&system2, &gyro2, &accel2, &mag2);
+
+  // The data should be ignored until the system calibration is > 0
+  Serial.print("\t");
+  if (!system)
+  {
+    Serial.print("! ");
+  }
+  
+  Serial.print("Sys:");
+  Serial.print(system, DEC);
+  Serial.print(" G:");
+  Serial.print(gyro, DEC);
+  Serial.print(" A:");
+  Serial.print(accel, DEC);
+  Serial.print(" M:");
+  Serial.print(mag, DEC);
+
+  Serial.print("\t");
+  if (!system2)
+  {
+    Serial.print("!2 ");
+  }
+  Serial.print(" Sys2:");
+  Serial.print(system2, DEC);
+  Serial.print(" G2:");
+  Serial.print(gyro2, DEC);
+  Serial.print(" A2:");
+  Serial.print(accel2, DEC);
+  Serial.print(" M2:");
+  Serial.println(mag2, DEC);
+
+  */
+
+  
+  /* DIFFERENCE MATH
+  
+  double Z1 = euler.z();
+  double Z2 = euler2.z();
+  
+  Serial.print("Z1: ");
+  Serial.print(Z1);
+
+  Serial.print("  Z2: ");
+  Serial.println(Z2);
+
+  
+  Serial.print("  X1 - X2: ");
+  Serial.print(X1 - X2);
+  
+  if((X1-X2 > 10 && X1-X2 < 350) || (X1-X2 < -10 && X1-X2 > -350)) {
+    Serial.println("  1");
+  }
+  else {
+    Serial.println("  0");
+  }
+  */
+
+ // imu::Quaternion quat = bno.getQuat();
+
+  /* Display the quat data */
+//  Serial.print("qW: ");
+//  Serial.print(quat.w(), 4);
+//  Serial.print(" qX: ");
+//  Serial.print(quat.y(), 4);
+//  Serial.print(" qY: ");
+//  Serial.print(quat.x(), 4);
+//  Serial.print(" qZ: ");
+//  Serial.print(quat.z(), 4);
+//  Serial.println("");
